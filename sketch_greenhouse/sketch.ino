@@ -1,46 +1,56 @@
-#include <DHT.h>
-#include <Servo.h> 
+#include <AHTxx.h>
+#include <Wire.h>
+#include <GyverOLED.h>
+#include <DHT.h> // USE LIBRARY FROM ADAFRUIT LIBARY AND USE ADAFRUIT DEPENCY
 #include <ESP8266WiFi.h>
-#include <PubSubClient.h>
-//#include "DHT.h"
-#define DHTPIN 5 
-const int relPin = 4;
-unsigned long timing;
-uint32_t myTimer1;
+#include <PubSubClient.h> // USE LIBRARY FROM IMROY
+// https://github.com/Imroy/pubsubclient
 
-int value = 0;
-int value1 = 0;
-int sense_Pin = 0;
-int led1 = 14;
-int led2 = 12;
-int led3 = 13;
-int led4 = 15;
+#define DHTPIN D6 
+#define DHTTYPE DHT22
 
-int fan = 0;
+const int scale = 1;
 
-bool p = false;
-// Пин для сервопривода
+DHT dht(DHTPIN, DHTTYPE); 
+GyverOLED<SSH1106_128x64> oled;
 
-bool modee = false;
-int poliv = 0;
 
-DHT dht(DHTPIN, DHT22);
 
+String code = "12346"; // Код теплицы
 const char *ssid = "ROSTELECOM_97CF"; // Имя вайфай точки доступа
 const char *pass = "MP7PC44J"; // Пароль от точки доступа
+
+int otkat = 1000;
+unsigned long timing;
+uint32_t myTimer1;
+int value = 0;
+int fan = D8;
+int nasos = D4;
+bool modee = false;
+int poliv = 25;
+bool p = false;
+
+
 
 const char *mqtt_server = "m2.wqtt.ru"; // Имя сервера MQTT
 const int mqtt_port = 5631; // Порт для подключения к серверу MQTT
 const char *mqtt_user = "u_2CWPYH"; // Логи от сервер
 const char *mqtt_pass = "716Q9lLe"; // Пароль от сервера
-int otkat = 1000;
+
+const int AirValue = 855;             // Максимальное значение сухого датчика
+const int WaterValue = 450;           // Минимальное значение погруженного датчика
+int soilMoistureValue = 0;            // Создаем переменную soilMoistureValue
+int soilmoisturepercent = 0;  
+uint8_t pinSensor = A0;
+
+float ahtValue;                               //to store T/RH result
+
+AHTxx aht10(AHTXX_ADDRESS_X38, AHT1x_SENSOR); //sensor address, sensor type
+
 
 WiFiClient wclient;
 PubSubClient client(wclient, mqtt_server, mqtt_port);
 
-int servoPin = 4;
-// Создаем объект
-Servo Servo1;
 
 void callback(const MQTT::Publish& pub)
 {
@@ -49,44 +59,25 @@ Serial.print(" => ");
 Serial.print(pub.payload_string()); // выводим в сериал порт значение полученных данных
 
 String payload = pub.payload_string();
-  if(String(pub.topic()) == "test/pomp") // проверяем из нужного ли нам топика пришли данные
+  String stled = payload;
+  Serial.println("msg: " + payload);
+  if(String(pub.topic()) == "test"+code+"/pomp") // проверяем из нужного ли нам топика пришли данные
   {
-    String stled = payload; // преобразуем полученные данные в тип integer
-    //Serial.println("pomp:" + payload);// включаем или выключаем светодиод в зависимоти от полученных значений данных
+    //String stled = payload; // преобразуем полученные данные в тип integer
+    //// включаем или выключаем светодиод в зависимоти от полученных значений данных
     
     
-    if(stled == "1"){
-      digitalWrite(led1, HIGH);
-      digitalWrite(led2, LOW);
-      digitalWrite(led3, LOW);
-      }
-         
-    if(stled == "2"){
-      digitalWrite(led1, LOW);
-      digitalWrite(led2, HIGH);
-      digitalWrite(led3, LOW);
-      }
-    if(stled == "3"){
-      digitalWrite(led1, LOW);
-      digitalWrite(led2, LOW);
-      digitalWrite(led3, HIGH);
-      }
-    if(stled == "4"){
-        p = true;
-        digitalWrite(led4, LOW);
-      }
-
-    if(stled == "p0"){
+    if(stled == "p1"){
 
         digitalWrite(fan, HIGH);
       }
-    if(stled == "p1"){
+    if(stled == "p0"){
 
         digitalWrite(fan, LOW);
       }
       
   }
-  else if(String(pub.topic()) == "test/mode") {
+  else if(String(pub.topic()) == "test"+code+"/mode") {
       
       if (getValue(payload,'.',0) == "hum"){
           modee = false;
@@ -97,87 +88,105 @@ String payload = pub.payload_string();
 }
 
 
-
 void setup() {
   dht.begin();
   Serial.begin(9600);
-  delay(10);
-  Serial.println();
-  Serial.println();
-  pinMode(DHTPIN, INPUT);
-  pinMode(4, INPUT);
-  pinMode(led1, OUTPUT);
-  pinMode(led2, OUTPUT);
-  pinMode(led3, OUTPUT);
-  pinMode(led4, OUTPUT);
+  aht10.begin();
   pinMode(fan, OUTPUT);
-  digitalWrite(led4, HIGH);
-  digitalWrite(fan, HIGH);
-  Servo1.attach(servoPin);
-  Servo1.write(-180);
-  delay(500);
-  Servo1.write(0);
+  pinMode(nasos, OUTPUT);
+  pinMode(pinSensor, INPUT);
+  oled.init();  // инициализация
+
+  oled.clear();  
+  oled.update(); 
+
+  oled.setCursor(1, 1);   // курсор в (пиксель X, строка Y)
+  oled.setScale(scale);
+  oled.print("Temp:");
+  oled.setCursor(1, 2);   // курсор в (пиксель X, строка Y
+  oled.print("Hum:");
+  oled.setCursor(1, 4);   // курсор в (пиксель X, строка Y)
+  oled.setScale(scale);
+  oled.print("Temp:");
+  oled.setCursor(1, 5);   // курсор в (пиксель X, строка Y
+  oled.print("Hum:");
+  oled.update();
+  Serial.print("Setup init");
+
 }
 
 void loop() {
-  Serial.println("hum " + String(analogRead(A0)));
   try_connect();
   if (client.connected() ){
     client.loop();
-    send_data();
-    Serial.println("connected");
-    client.set_callback(callback);
-    client.subscribe("test/pomp");
-     client.subscribe("test/mode");
-     
-  }
-   client.set_callback(callback);
-   client.subscribe("test/pomp");
-    int water = analogRead(A0);
+    float h = dht.readHumidity();
+    // Read temperature as Celsius (the default)
+    float t = dht.readTemperature();
+    soilMoistureValue = analogRead(pinSensor);   // Считываем данные с порта A0 и записываем их в переменную
+    soilmoisturepercent = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
+    
+    oled.setCursor(64, 1);   // курсор в (пиксель X, строка Y)
+    oled.print(String(t));
+    oled.setCursor(64, 2);   // курсор в (пиксель X, строка Y)
+    oled.print(String(h));
 
-    value1 = map(water, 1048, 350, 0, 100);
+    ahtValue = aht10.readTemperature();
+    oled.setCursor(64, 4);   // курсор в (пиксель X, строка Y)
+    oled.print(String(ahtValue));
+    oled.setCursor(64, 5);   // курсор в (пиксель X, строка Y)
+    ahtValue = aht10.readHumidity();
+    oled.print(String(ahtValue));
+    oled.update();
+    send_data(t, h, soilmoisturepercent);
+    Serial.println("connected");
+
+    
+    client.set_callback(callback);
+    client.subscribe("test"+code+"/pomp");
+    client.subscribe("test"+code+"/mode");
+
+
     if(modee == false){
-      Serial.println( " val " + String(value1) + " poliv :" +  String(poliv)); 
-      if(value1 < poliv){
+    if(soilmoisturepercent < poliv){
           p = true;
-          
-          digitalWrite(led4, LOW);
+          digitalWrite(D4, HIGH);
         }
     }
 
-   if(p == true){
+    if(p == true){
       if (millis() - myTimer1 >= 5000) {   
           myTimer1 = millis();
-          digitalWrite(led4, HIGH);
           p = false;
+          digitalWrite(D4, LOW);
           
        }
     }
- 
+     
+  }
+  
 }
 
 
-void send_data(){
-  if (millis() - timing > otkat){ 
-    float t = dht.readTemperature();    
-    float h = dht.readHumidity();    
-    int water = analogRead(A0);
 
-    value = map(water, 1048, 350, 0, 100);
-    client.publish("test/temp",String(String(t) + " " + String(h)) + " " + String(value)); 
+void send_data(float t, float h, float soilmoisturepercent){
+  if (millis() - timing > otkat){ 
+    //float t = dht22.readTemperature();    
+    //float h = dht22.readHumidity();    
+    int water = 400;
+
+
     
 
-    //Serial.println(t);   
-    //Serial.println(h);
+    value = map(water, 1048, 350, 0, 100);
+    client.publish("test"+code+"/temp",String(String(t) + " " + String(h)) + " " + String(soilmoisturepercent)); 
+    
+
+    Serial.println(" temp " + String(t) + " hum " + String(h));   
+    Serial.println(t);
     timing = millis();
   }
       
 }
-
-void check_data(){
-  
-  client.subscribe("test/pomp");
-  }
 
 
 void try_connect(){if (WiFi.status() != WL_CONNECTED) {
